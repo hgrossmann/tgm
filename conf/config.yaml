@@ -1,0 +1,4 @@
+defaults:
+  - data: stock
+  - model: sde
+  - train: base

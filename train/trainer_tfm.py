@@ -1,0 +1,156 @@
+import copy
+import warnings
+from typing import List, Optional
+import torch
+import matplotlib.pyplot as plt
+from omegaconf import DictConfig, OmegaConf
+from tgm.utils.metrics import mmd_metric, sinkhorn_dist
+from tgm.train.callbacks import Callback
+import math
+
+class Trainer:
+    def __init__(self, train_cfg: DictConfig, model, optimizer_target, optimizer_noise, train_loader, val_sub = None, val_full = None,
+                 callbacks: Optional[List[Callback]] = None):
+        self.cfg = train_cfg
+        self.model = model
+        self.optimizer_target = optimizer_target
+        self.optimizer_noise = optimizer_noise
+        self.train_loader = train_loader
+        self.val_sub = val_sub
+        self.val_full = val_full
+        self._callbacks: List[Callback] = callbacks or []
+        
+
+    def train(self):
+        
+        global_step = 0
+        
+        self._cb("on_train_start", no_epochs=self.cfg.no_epochs)
+        
+        for i in range(self.cfg.no_epochs):
+            
+            epoch_loss = 0.0
+            epoch_loss_target = 0.0
+            epoch_loss_noise = 0.0
+
+            epoch_noise = 0.0
+            epoch_target = 0.0
+            epoch_x1 = 0.0
+            epoch_x2 = 0.0
+            epoch_delta = 0.0
+            epoch_h = 0.0
+            
+            for j, batch in enumerate(self.train_loader):
+                global_step += 1
+                #loss = self._step(batch)
+                loss_target, loss_noise, noise, target, x1, x2, delta, h = self._step(batch)
+                #if j%10 == 0:
+                #    print("Batch", j)
+                #    print("loss-target: ", loss_target)
+                #    print("L-sigma: ", noise.mean(), "-", loss_target, "=", noise.mean()-loss_target)
+                #    print("loss-noise: ", loss_noise)
+                #    print(" ")
+                loss = loss_target + loss_noise
+                epoch_loss_target = (j / (j + 1)) * epoch_loss_target + (1 / (j + 1)) * loss_target
+                epoch_loss_noise = (j / (j + 1)) * epoch_loss_noise + (1 / (j + 1)) * loss_noise
+
+                epoch_noise = (j / (j + 1)) * epoch_noise + (1 / (j + 1)) * noise
+                epoch_target = (j / (j + 1)) * epoch_target + (1 / (j + 1)) * target
+                epoch_x1 = (j / (j + 1)) * epoch_x1 + (1 / (j + 1)) * x1
+                epoch_x2 = (j / (j + 1)) * epoch_x2 + (1 / (j + 1)) * x2
+                epoch_delta = (j / (j + 1)) * epoch_delta + (1 / (j + 1)) * delta
+                epoch_h = (j / (j + 1)) * epoch_h + (1 / (j + 1)) * h
+
+                epoch_loss = epoch_loss_target + epoch_loss_noise
+                #epoch_loss = (j / (j + 1)) * epoch_loss + (1 / (j + 1)) * loss
+                
+                self._cb("on_step_end", step=global_step, loss=loss)
+
+            print(" ")
+            print("Epoch noise: ", epoch_noise.mean().detach())
+            print("Epoch target_m: ", epoch_target.mean().detach())
+            print("Epoch target_v:", epoch_target.var().detach())
+            print("Epoch x1_m: ", epoch_x1.mean())
+            print("Epoch x1_v: ", epoch_x1.var())
+            print("Epoch x2_m: ", epoch_x2.mean())
+            print("Epoch x2_v: ", epoch_x2.var())
+            print("Epoch delta: ", epoch_delta.mean())
+            print("Epoch h: ", epoch_h.mean())
+
+            self._cb("on_epoch_end", step=global_step, epoch = i, loss=epoch_loss)
+    
+            mmd, sinkhorn, trajectories, times = self._validate()
+                
+            self._cb("on_validation_end", step=global_step, mmd=mmd, sinkhorn = sinkhorn,
+                     trajectories = trajectories, times = times) 
+                
+        self._cb("on_train_end")
+                
+        return
+
+    @torch.no_grad()
+    def _validate(self):
+        self.model.eval()
+        
+        if self.cfg.regular_val_set_provided:
+            # load validation set
+            val_samples = self.val_full["x"]
+            
+            # generate as many sample paths
+            x0 = torch.tensor(OmegaConf.to_container(self.cfg.x_start), dtype=torch.float32)
+            #aemet:
+            #x0 = val_samples[:, 0, :] # [N,1] statt cfg.x_start
+            
+            samples, times, _ = self.model.sample_unif(x0, self.cfg.no_bridges, self.cfg.t_start, self.cfg.t_end, self.cfg.stepsize, no_samples = val_samples.shape[0])
+            
+            # subsample sample paths to get same time grid as validation paths
+            trajectory_length = samples.shape[1]
+            assert trajectory_length == round((self.cfg.t_end - self.cfg.t_start) / self.cfg.stepsize + 1)
+            equidistant_steps = self.cfg.val_trajectory_length - 1
+            assert int(trajectory_length - 1) % equidistant_steps == 0
+            stepsize_subsampling = int((trajectory_length - 1) / equidistant_steps)
+            samples_val_grid = samples[:, torch.arange(0, trajectory_length, stepsize_subsampling), :] #potentially just interpolate if grid cannot be aligned
+            
+            # compute metrics
+            mmd = mmd_metric(samples_val_grid, val_samples)
+            sinkhorn = sinkhorn_dist(samples_val_grid, val_samples)
+        
+        return mmd, sinkhorn, samples_val_grid, times[:, torch.arange(0, trajectory_length, stepsize_subsampling)]
+        
+        # Note:
+        # complete trajectory mmd/sinkhorn works only for uniform timegrid
+        # but mse is correlated an works for arbitray timegrids
+        # so choose mse for stopping, when working with eicu data?!
+
+    def _step(self, batch):
+        
+        self.model.train()
+        self.optimizer_target.zero_grad()
+
+        #loss_target = self.model.loss(batch)
+        loss_target, loss_noise, cond_noise, xt, x1, x2, delta, h = self.model.loss(batch)
+        if not torch.isfinite(loss_target):
+            print("Non-finite target loss, skipping step.")
+        else:
+            loss_target.backward(retain_graph=True)
+            torch.nn.utils.clip_grad_norm_(list(self.model.drift.parameters()) + list(self.model.tnext.parameters()), 1.0)
+            self.optimizer_target.step()
+
+        self.optimizer_noise.zero_grad()
+        if not torch.isfinite(loss_noise):
+            print("Non-finite noise loss, skipping step.")
+        else:
+            loss_noise.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.noise.parameters(), 1.0)
+            self.optimizer_noise.step()
+        return loss_target.item(), loss_noise.item(), cond_noise, xt, x1, x2, delta, h
+    
+    def _cb(self, name: str, **kw):
+        for cb in self._callbacks:
+            fn = getattr(cb, name, None)
+            if fn is None:
+                continue
+            try:
+                fn(trainer=self, **kw)
+            except Exception as e:
+                warnings.warn(f"Callback {cb.__class__.__name__}.{name} failed: {e}")

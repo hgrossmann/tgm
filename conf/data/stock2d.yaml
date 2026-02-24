@@ -1,0 +1,36 @@
+dataset: BlackScholes2d # self chosen name for output paths etc
+
+model_name: BlackScholes
+
+n_series: 0  # overwritten by train/val/test_size
+n_steps: 100 # trajectories will contain T = n_steps + 1 time points
+
+size_train: 128000
+size_val: 5000
+size_test: 5000
+
+seed_train: 0
+seed_val: 100
+seed_test: 200
+
+save_dir: ../data/stock2d
+
+# model hyperparams used by BlackScholes
+drift: [2., -0.2]
+volatility: [0.3, 0.1]
+S0: [1.0, 10.0]
+maturity: 1.0 # T_end
+
+
+# extra params kept for compatibility with other stock models; harmless for BS
+correlation: 0.5
+mean: 4.
+speed: 2.
+sine_coeff: null
+scheme: euler
+return_vol: false
+v0: null
+
+# subsampling procedure
+T_sub: 10 # number of points per trajectory after irregular subsampling
+fix_min_max: false # whether first and last point are always at t_min and t_max (here 0 and maturity)

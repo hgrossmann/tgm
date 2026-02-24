@@ -1,0 +1,4 @@
+defaults:
+  - data: aemet
+  - model: model1d
+  - train: train_aemet

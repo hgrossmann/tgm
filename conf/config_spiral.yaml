@@ -1,0 +1,4 @@
+defaults:
+  - data: spiral
+  - model: model2d
+  - train: train_spiral

@@ -1,0 +1,16 @@
+__pycache__/
+
+/data
+
+/runs
+/runs_spiral
+/runs_stock1d
+/runs_stock2d
+/runs_stock_correlated
+
+/eval_output
+
+/scripts/outputs/
+/scripts/wandb/
+/scripts/test_plots/
+/scripts/runner_archive/

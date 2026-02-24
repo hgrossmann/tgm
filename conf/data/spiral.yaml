@@ -1,0 +1,16 @@
+dataset: Spiral2d # self chosen name for output paths etc
+
+n_series: 0  # overwritten by train/val/test_size
+n_steps: 100 # trajectories will contain T = n_steps + 1 time points
+
+size_train: 128000
+size_val: 5000
+size_test: 5000
+
+save_dir: ../data/spiral
+
+noise_std: 0.0
+
+# subsampling procedure
+T_sub: 10 # number of points per trajectory after irregular subsampling
+fix_min_max: false # whether first and last point are always at t_min and t_max

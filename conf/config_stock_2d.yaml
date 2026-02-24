@@ -1,0 +1,4 @@
+defaults:
+  - data: stock2d
+  - model: model2d
+  - train: train_stock2d

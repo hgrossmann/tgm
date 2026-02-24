@@ -1,0 +1,4 @@
+defaults:
+  - data: stock1d
+  - model: model2d
+  - train: train_stock_2d_correlated
