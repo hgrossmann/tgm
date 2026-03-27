@@ -1,0 +1,4 @@
+defaults:
+  - data: bm1d
+  - model: model1d
+  - train: train_bm1d

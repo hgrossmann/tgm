@@ -3,6 +3,8 @@ from typing import Optional, Dict, Any
 from tgm.utils.network import create_drift_network, create_uncertainty_network, create_observation_network
 from tgm.utils.memory import get_memory
 from omegaconf import DictConfig
+import pandas as pd
+import os
 
 class NoiseModel(nn.Module):
     def __init__(self, model_cfg: DictConfig):
@@ -10,12 +12,16 @@ class NoiseModel(nn.Module):
         self.device = model_cfg.device
         self.net = create_uncertainty_network(model_cfg).to(self.device)
         self.softplus = nn.Softplus(beta=1.0, threshold=20.0) # output should be positive
+        self.memory_switch =model_cfg.memory_switch
 
-    def forward(self, x, t, x_mem, t_mem):
+    def forward(self, x, t, x_mem, t_mem, t2):
         batchsize = x.shape[0]
-        single_vals = torch.cat([x, t], dim=-1)
-        memory_flat = torch.cat([x_mem, t_mem], dim=-1).reshape(batchsize, -1)
-        inpu = torch.cat([single_vals, memory_flat], dim=-1)
+        single_vals = torch.cat([x, t, t2], dim=-1)
+        if self.memory_switch == "on":
+            memory_flat = torch.cat([x_mem, t_mem], dim=-1).reshape(batchsize, -1)
+            inpu = torch.cat([single_vals, memory_flat], dim=-1)
+        else:
+            inpu = torch.cat([single_vals], dim=-1)
         return self.softplus(self.net(inpu))
     
 class tnextModel(nn.Module):
@@ -43,10 +49,11 @@ class DriftDiffusionModel(nn.Module):
         self.noise = NoiseModel(model_cfg).to(self.device)
         self.tnext = tnextModel(model_cfg).to(self.device)
         #self.sigma_base = float(model_cfg.sigma)
-        self.sigma_base = float(0.1) #tfm paper
+        self.sigma_base = float(10.) #tfm paper
         self.mu = float(model_cfg.drift)
+        self.memory_switch = model_cfg.memory_switch
 
-    def forward(self, x, t, x_mem, t_mem): # TODO eventually self.drift should accept these arguments
+    def forward(self, x, t, x_mem, t_mem, t2): # TODO eventually self.drift should accept these arguments
         """
         x of shape [batchsize, state_dim]
         t, t2 of shape [batchsize, 1]
@@ -54,11 +61,14 @@ class DriftDiffusionModel(nn.Module):
         t_mem of shape [batchsize, memory_length, 1]
         """    
         batchsize = x.shape[0]
-        single_vals = torch.cat([x, t], dim=-1)
-        memory_flat = torch.cat([x_mem, t_mem], dim=-1).reshape(batchsize, -1)
+        single_vals = torch.cat([x, t, t2], dim=-1)
         # single_vals = torch.cat([t2, t, x], dim=-1)
         # memory_flat = torch.cat([x_mem.reshape(batchsize, -1), t_mem.reshape(batchsize, -1)], dim=-1)
-        inpu = torch.cat([single_vals, memory_flat], dim=-1)
+        if self.memory_switch == "on":
+            memory_flat = torch.cat([x_mem, t_mem], dim=-1).reshape(batchsize, -1)
+            inpu = torch.cat([single_vals, memory_flat], dim=-1)
+        else:
+            inpu = torch.cat([single_vals], dim=-1)
         return self.drift(inpu)
     
     def _loss_target(self, batch_size, pred_ut, ut):
@@ -88,6 +98,21 @@ class DriftDiffusionModel(nn.Module):
         mask = None # batch["mask"] # TODO add nonuniform lengths later
  
         batch_size = data.shape[0]
+
+        B, T, _ = data.shape
+        x = data.squeeze(-1).detach().cpu().numpy()   # [B, T]
+        t = times.detach().cpu().numpy()              # [B, T]
+
+        # save data for consistency analyses
+        os.makedirs("../output_traj", exist_ok=True)
+
+        rows = []
+        for i in range(B):
+            for k in range(T):
+                rows.append((i, float(t[i, k]), float(x[i, k])))
+
+        df_long = pd.DataFrame(rows, columns=["traj_id", "t", "x"])
+        df_long.to_csv("../output_traj/generated_data_long.csv", index=False)
         
         t, idx_prev = self._draw_t(data, times, mask)
         
@@ -126,15 +151,20 @@ class DriftDiffusionModel(nn.Module):
 
         #Wir probieren jetzt doch nochmal targetprediction genau wie im tfm code:
         tau = (t-t1)/(t2-t1)
-        pred_noise = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem)
-        pred_x = self.forward(x, t = t, x_mem = x_mem, t_mem = t_mem)
+        pred_noise = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
+        pred_x = self.forward(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
+        
         h = (t2-t)*(t-t1)/(t2-t1) #rescale unsere skala auf [t1~0, t2~1] vgl TFM code 
-        loss_target = torch.mean((pred_x + torch.sqrt(h) * pred_noise.clone().detach() * torch.randn_like(x1) - x2)**2)
-        loss_noise = torch.mean((pred_x.clone().detach() + torch.sqrt(h) * pred_noise * torch.randn_like(x1) - x2)**2)
+        #loss_target = torch.mean((pred_x + torch.sqrt(h) * torch.sqrt(pred_noise.clone().detach()) * torch.randn_like(x1) - x2)**2)
+        loss_target = torch.mean((pred_x - x2)**2)
+        #loss_noise = torch.mean((pred_x.clone().detach() + torch.sqrt(h) * torch.sqrt(pred_noise) * torch.randn_like(x1) - x2)**2)
+        loss_noise = torch.mean((pred_noise - torch.abs(pred_x.clone().detach() - x2))**2)
         delta = t2-t1
-        h2 = torch.sqrt((t2-t)*(t-t1)/(t2-t1))*(t-t1)/(t2-t1)
+        ut = (pred_x.detach() - x1) / (delta + 1e-8)
+        res = x2 - x1 - self.mu * delta   # [B,D]
+        h2 = (res**2 / (delta + 1e-8)).mean()
 
-        return loss_target , loss_noise, pred_noise, pred_x, x1, x2, delta, h2
+        return loss_target, loss_noise, pred_noise, pred_x, x1, x2, delta, ut, h2
 
     def _draw_t(self, data, times, mask):
         batch_size = data.shape[0]
@@ -216,15 +246,12 @@ class DriftDiffusionModel(nn.Module):
                 t = (t_bridges[k] + i * stepsize).expand(no_samples, 1)
                 t2 = (t_bridges[k] + (i+1) * stepsize).expand(no_samples, 1)
                 
-                #tnext = t + self.tnext(t, x_mem, t_mem)
-                tnext = t2
-                #x2_pred = self.forward(x, t, x_mem, t_mem, tnext)
-                drift = self.forward(x, t = t, x_mem=x_mem , t_mem=t_mem)
-                #drift = (x2_pred - x) / (tnext - t)
+                x2_pred = self.forward(x, t, x_mem, t_mem, t2)
+                sigma = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
+                
+                drift = (x2_pred - x) / (t2 - t)
                 #drift = self.mu * x
-                sigma = self.noise(x, t = t, x_mem=x_mem, t_mem=t_mem)
                 #sigma = self.sigma_base * x
-                #stepsize = tnext - t
 
                 #x_new = x + stepsize * drift + torch.sqrt(stepsize) * sigma * torch.randn_like(x)
                 x_new = x + stepsize * drift + torch.sqrt(stepsize) * torch.sqrt(sigma) * torch.randn_like(x)

@@ -375,6 +375,44 @@ class BlackScholes(StockModel):
         return spot_paths, dt
 
 
+class BrownianMotion(StockModel):
+    """
+    additive Brownian motion with drift:
+      dX = mu * dt + sigma * dW
+    (optionally with periodic_coeff like in the other models)
+    """
+    def __init__(self, drift, volatility, nb_paths, nb_steps, S0,
+                 maturity, sine_coeff=None, **kwargs):
+        super(BrownianMotion, self).__init__(
+            drift=drift, volatility=volatility, nb_paths=nb_paths,
+            nb_steps=nb_steps, S0=S0, maturity=maturity,
+            sine_coeff=sine_coeff
+        )
+
+    def next_cond_exp(self, y, delta_t, current_t):
+        return y + (self.drift*self.periodic_coeff(current_t)*delta_t)
+
+    def generate_paths(self, start_X=None):
+        drift = lambda x, t: self.drift*self.periodic_coeff(t)
+        diffusion = lambda x, t: self.volatility
+        spot_paths = np.empty(
+            (self.nb_paths, self.dimensions, self.nb_steps + 1))
+        dt = self.maturity / self.nb_steps
+        if start_X is not None:
+            spot_paths[:, :, 0] = start_X
+        for i in range(self.nb_paths):
+            if start_X is None:
+                spot_paths[i, :, 0] = self.S0
+            for k in range(1, self.nb_steps + 1):
+                random_numbers = np.random.normal(0, 1, self.dimensions)
+                dW = random_numbers * np.sqrt(dt)
+                spot_paths[i, :, k] = (
+                        spot_paths[i, :, k - 1]
+                        + drift(spot_paths[i, :, k - 1], (k-1) * dt) * dt
+                        + diffusion(spot_paths[i, :, k - 1], (k) * dt) * dW)
+        # stock_path dimension: [nb_paths, dimension, time_steps]
+        return spot_paths, dt
+
 class OrnsteinUhlenbeck(StockModel):
     """
     Ornstein-Uhlenbeeck stock model, see:
@@ -485,6 +523,7 @@ def compute_loss(X_obs, Y_obs, Y_obs_bj, n_obs_ot, batch_size, eps=1e-10,
 # dict for the supported stock models to get them from their name
 STOCK_MODELS = {
     "BlackScholes": BlackScholes,
+    "BrownianMotion": BrownianMotion,
     "Heston": Heston,
     "OrnsteinUhlenbeck": OrnsteinUhlenbeck,
     "HestonWOFeller": HestonWOFeller,

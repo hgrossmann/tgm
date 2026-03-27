@@ -3,8 +3,11 @@ import torch.nn as nn
 from omegaconf import DictConfig
 
 def create_drift_network(cfg: DictConfig) -> nn.Module:
-    #input_dim = (cfg.memory_length + 1) * (cfg.data_dim + 1) + 1
-    input_dim = 2 + (cfg.memory_length) * (cfg.data_dim + 1)
+    if cfg.memory_switch == "on":
+        input_dim = (cfg.memory_length + 1) * (cfg.data_dim + 1) + 1
+    else:
+        input_dim = (cfg.data_dim + 1) + 1
+    #input_dim = 2 + (cfg.memory_length) * (cfg.data_dim + 1)
     width = cfg.drift_mlp_width
     return nn.Sequential(
         nn.Linear(input_dim, width), nn.ReLU(),
@@ -29,8 +32,11 @@ def create_sigma_network(cfg: DictConfig) -> nn.Module:
 
 def create_uncertainty_network(cfg: DictConfig) -> nn.Module:
     #input_dim für tfm paper script:
-    input_dim = 2 + (cfg.memory_length) * (cfg.data_dim + 1)
-    #input_dim = (cfg.memory_length + 1) * (cfg.data_dim + 1) + 1
+    #input_dim = 2 + (cfg.memory_length) * (cfg.data_dim + 1)
+    if cfg.memory_switch == "on":
+        input_dim = (cfg.memory_length + 1) * (cfg.data_dim + 1) + 1
+    else:
+        input_dim = (cfg.data_dim + 1) + 1
 
     width = cfg.sigma_width
     return nn.Sequential(

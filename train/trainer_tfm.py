@@ -38,12 +38,13 @@ class Trainer:
             epoch_x1 = 0.0
             epoch_x2 = 0.0
             epoch_delta = 0.0
+            epoch_ut = 0.0
             epoch_h = 0.0
             
             for j, batch in enumerate(self.train_loader):
                 global_step += 1
                 #loss = self._step(batch)
-                loss_target, loss_noise, noise, target, x1, x2, delta, h = self._step(batch)
+                loss_target, loss_noise, noise, target, x1, x2, delta, ut, h = self._step(batch)
                 #if j%10 == 0:
                 #    print("Batch", j)
                 #    print("loss-target: ", loss_target)
@@ -59,6 +60,7 @@ class Trainer:
                 epoch_x1 = (j / (j + 1)) * epoch_x1 + (1 / (j + 1)) * x1
                 epoch_x2 = (j / (j + 1)) * epoch_x2 + (1 / (j + 1)) * x2
                 epoch_delta = (j / (j + 1)) * epoch_delta + (1 / (j + 1)) * delta
+                epoch_ut = (j / (j + 1)) * epoch_ut + (1 / (j + 1)) * ut
                 epoch_h = (j / (j + 1)) * epoch_h + (1 / (j + 1)) * h
 
                 epoch_loss = epoch_loss_target + epoch_loss_noise
@@ -75,6 +77,7 @@ class Trainer:
             print("Epoch x2_m: ", epoch_x2.mean())
             print("Epoch x2_v: ", epoch_x2.var())
             print("Epoch delta: ", epoch_delta.mean())
+            print("Epoch ut:", epoch_ut.mean())
             print("Epoch h: ", epoch_h.mean())
 
             self._cb("on_epoch_end", step=global_step, epoch = i, loss=epoch_loss)
@@ -128,7 +131,7 @@ class Trainer:
         self.optimizer_target.zero_grad()
 
         #loss_target = self.model.loss(batch)
-        loss_target, loss_noise, cond_noise, xt, x1, x2, delta, h = self.model.loss(batch)
+        loss_target, loss_noise, cond_noise, xt, x1, x2, delta, ut, h = self.model.loss(batch)
         if not torch.isfinite(loss_target):
             print("Non-finite target loss, skipping step.")
         else:
@@ -143,7 +146,7 @@ class Trainer:
             loss_noise.backward()
             torch.nn.utils.clip_grad_norm_(self.model.noise.parameters(), 1.0)
             self.optimizer_noise.step()
-        return loss_target.item(), loss_noise.item(), cond_noise, xt, x1, x2, delta, h
+        return loss_target.item(), loss_noise.item(), cond_noise, xt, x1, x2, delta, ut, h
     
     def _cb(self, name: str, **kw):
         for cb in self._callbacks:

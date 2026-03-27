@@ -22,7 +22,8 @@ MODEL_REGISTRY = {
     "tnextModel": tnextModel
 }
 
-@hydra.main(config_path="../conf", config_name="config_stock_1d", version_base=None)
+#@hydra.main(config_path="../conf", config_name="config_stock_1d", version_base=None)
+@hydra.main(config_path="../conf", config_name="config_bm_1d", version_base=None)
 #@hydra.main(config_path="../conf", config_name="config_aemet", version_base=None)
 def main(cfg: DictConfig):
     _seed_all(cfg.train.manual_seed)
@@ -62,6 +63,12 @@ def main(cfg: DictConfig):
     trainer = Trainer(cfg.train, model, optimizer_target, optimizer_noise, train_loader, val_sub, val_full, callbacks)
     
     trainer.train()
+
+    save_path = "../checkpoints/model.pt"
+    torch.save({
+        "model_state": model.state_dict(),
+        "config": cfg
+    }, save_path)
     
     
 if __name__ == "__main__":
