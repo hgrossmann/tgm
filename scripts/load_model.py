@@ -5,7 +5,7 @@ import os
 import hydra
 from omegaconf import DictConfig
 
-from tgm.models.tfm_paper_model import DriftDiffusionModel, NoiseModel, tnextModel
+from tgm.models.tfm_model import DriftDiffusionModel, NoiseModel, tnextModel
 from tgm.utils.memory import get_memory
 
 MODEL_REGISTRY = {

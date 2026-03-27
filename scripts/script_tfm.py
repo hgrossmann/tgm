@@ -14,7 +14,7 @@ from tgm.utils.stock_data import make_loaders
 from tgm.train.trainer_tfm import Trainer
 from tgm.train.callbacks import WandbCallback, PrintCallback, PlottingCallback, SavingCallback
 
-from tgm.models.tfm_paper_model import DriftDiffusionModel, NoiseModel, tnextModel
+from tgm.models.tfm_model import DriftDiffusionModel, NoiseModel, tnextModel
 
 MODEL_REGISTRY = {
     "DriftDiffusionModel": DriftDiffusionModel,
