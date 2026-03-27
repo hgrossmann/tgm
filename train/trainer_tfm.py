@@ -35,16 +35,11 @@ class Trainer:
 
             epoch_noise = 0.0
             epoch_target = 0.0
-            epoch_x1 = 0.0
-            epoch_x2 = 0.0
-            epoch_delta = 0.0
-            epoch_ut = 0.0
-            epoch_h = 0.0
             
             for j, batch in enumerate(self.train_loader):
                 global_step += 1
                 #loss = self._step(batch)
-                loss_target, loss_noise, noise, target, x1, x2, delta, ut, h = self._step(batch)
+                loss_target, loss_noise, noise, target = self._step(batch)
                 #if j%10 == 0:
                 #    print("Batch", j)
                 #    print("loss-target: ", loss_target)
@@ -57,11 +52,6 @@ class Trainer:
 
                 epoch_noise = (j / (j + 1)) * epoch_noise + (1 / (j + 1)) * noise
                 epoch_target = (j / (j + 1)) * epoch_target + (1 / (j + 1)) * target
-                epoch_x1 = (j / (j + 1)) * epoch_x1 + (1 / (j + 1)) * x1
-                epoch_x2 = (j / (j + 1)) * epoch_x2 + (1 / (j + 1)) * x2
-                epoch_delta = (j / (j + 1)) * epoch_delta + (1 / (j + 1)) * delta
-                epoch_ut = (j / (j + 1)) * epoch_ut + (1 / (j + 1)) * ut
-                epoch_h = (j / (j + 1)) * epoch_h + (1 / (j + 1)) * h
 
                 epoch_loss = epoch_loss_target + epoch_loss_noise
                 #epoch_loss = (j / (j + 1)) * epoch_loss + (1 / (j + 1)) * loss
@@ -70,15 +60,7 @@ class Trainer:
 
             print(" ")
             print("Epoch noise: ", epoch_noise.mean().detach())
-            print("Epoch target_m: ", epoch_target.mean().detach())
-            print("Epoch target_v:", epoch_target.var().detach())
-            print("Epoch x1_m: ", epoch_x1.mean())
-            print("Epoch x1_v: ", epoch_x1.var())
-            print("Epoch x2_m: ", epoch_x2.mean())
-            print("Epoch x2_v: ", epoch_x2.var())
-            print("Epoch delta: ", epoch_delta.mean())
-            print("Epoch ut:", epoch_ut.mean())
-            print("Epoch h: ", epoch_h.mean())
+            print("Epoch target: ", epoch_target.mean().detach())
 
             self._cb("on_epoch_end", step=global_step, epoch = i, loss=epoch_loss)
     
@@ -131,7 +113,7 @@ class Trainer:
         self.optimizer_target.zero_grad()
 
         #loss_target = self.model.loss(batch)
-        loss_target, loss_noise, cond_noise, xt, x1, x2, delta, ut, h = self.model.loss(batch)
+        loss_target, loss_noise, cond_noise, xt = self.model.loss(batch)
         if not torch.isfinite(loss_target):
             print("Non-finite target loss, skipping step.")
         else:
@@ -146,7 +128,7 @@ class Trainer:
             loss_noise.backward()
             torch.nn.utils.clip_grad_norm_(self.model.noise.parameters(), 1.0)
             self.optimizer_noise.step()
-        return loss_target.item(), loss_noise.item(), cond_noise, xt, x1, x2, delta, ut, h
+        return loss_target.item(), loss_noise.item(), cond_noise, xt
     
     def _cb(self, name: str, **kw):
         for cb in self._callbacks:

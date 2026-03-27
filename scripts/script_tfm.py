@@ -35,15 +35,11 @@ def main(cfg: DictConfig):
     #     cfg.train.no_bridges = 100
     
     train_loader, val_sub, val_full, test_full = make_loaders(cfg.data, cfg.train)
+
+    #kleiner Workaround für aemet data:
     #train_loader, val_full = make_loaders(cfg.data, cfg.train)
     #val_sub = None
     #test_full = None
-    
-    # plot and save test set
-    # fig = _trajectory_plot_all_dims(test_full["x"], test_full["t"])
-    # output_path = _output_path(cfg)
-    # fig.savefig(os.path.join(output_path, "trajectories_test_set.png"), dpi=300)
-    # plt.show(fig)
     
     model_class = MODEL_REGISTRY[cfg.model.model_name]
     model = model_class(cfg.model)
@@ -51,12 +47,10 @@ def main(cfg: DictConfig):
     optimizer_target = torch.optim.Adam(
     list(model.drift.parameters()) + list(model.tnext.parameters()),
     lr=cfg.train.lr
-)
+) # theoretisch koennen wir hier noch ein tnext modell rein geben. Aktuell lauft das nicht
+    
     optimizer_noise = torch.optim.Adam(model.noise.parameters(), lr=cfg.train.lr)
 
-        
-    # callbacks = [PrintCallback(), PlottingCallback(), SavingCallback(cfg), 
-    #              WandbCallback(project = os.getenv("WANDB_PROJECT", "TGM-debug"), run_name = os.getenv("WANDB_RUN_NAME", "test_run"))]
     callbacks = [PrintCallback(), SavingCallback(cfg), 
                  WandbCallback(project = os.getenv("WANDB_PROJECT", "TGM-debug"), run_name = os.getenv("WANDB_RUN_NAME", "test_run"))]
     
@@ -64,6 +58,7 @@ def main(cfg: DictConfig):
     
     trainer.train()
 
+    # speichere das modell um es spaeter wieder aufrufen zu koennen
     save_path = "../checkpoints/model.pt"
     torch.save({
         "model_state": model.state_dict(),
