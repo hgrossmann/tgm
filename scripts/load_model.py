@@ -27,7 +27,7 @@ def main(cfg: DictConfig):
     model.to(device)
 
     n = 500
-    x0 = torch.ones(n, 1)  # Startpunkte bei 0
+    x0 = torch.ones(n, 1)  # Startpunkte bei 1
 
     traj = generate_trajectory(model, x0, 100, 0.01)
 
@@ -83,8 +83,11 @@ def generate_trajectory(model, x0, n_steps, dt, device="cpu"):
         else:
             inpu = torch.cat([single_vals], dim=-1)
 
-        pred_x = model.drift(inpu)
-        mu = (pred_x-x)/(t2-t)
+        # pred_x = model.drift(inpu)
+        # mu = (pred_x-x)/(t2-t)
+        # sigma = model.noise(x, t, x_mem, t_mem, t2)
+
+        mu = model.drift(inpu)
         sigma = model.noise(x, t, x_mem, t_mem, t2)
 
         x = x + mu * dt_t + torch.sqrt(sigma) * torch.sqrt(dt_t) * torch.randn_like(x)

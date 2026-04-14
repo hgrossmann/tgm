@@ -107,20 +107,26 @@ class DriftDiffusionModel(nn.Module):
         x_mem, t_mem = get_memory(data, times, idx_prev, self.memory_length)
 
         mt = (t2-t)/(t2-t1) * x1 + (t-t1)/(t2-t1) * x2 #Mittelwert
-        x = mt + self.sigma_base * torch.randn_like(x1) #hierdrauf lernen unsere Netze
+        tau_t = torch.sqrt((t2-t)*(t-t1)/(t2-t1).clamp_min(1e-3))*self.sigma_base
+        x = mt + tau_t * torch.randn_like(x1) #hierdrauf lernen unsere Netze
 
         #Das ist für den Fall, das wir Drift vorhersagen wollen
-        #pred_ut = self.forward(x, t, x_mem, t_mem, t2)
-        #ut = (x2-x) / (t2-t+1e-4)
-        #pred_x = x + ut * (t2-t)
+        pred_ut = self.forward(x, t, x_mem, t_mem, t2)
+        ut = (x2-x) / (t2-t).clamp_min(1e-3) 
+        pred_x = x + pred_ut * (t2-t)
 
-        tau = (t-t1)/(t2-t1)
         pred_noise = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
-        pred_x = self.forward(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
+        # pred_x = self.forward(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
 
         #Losses
-        loss_target = torch.mean((pred_x - x2)**2)
-        loss_noise = torch.mean((pred_noise - torch.abs(pred_x.clone().detach() - x2))**2)
+        # dt = (t2 - t).clamp_min(1e-3) 
+        # loss_target = torch.mean((pred_x - x2)**2)
+        # loss_noise = torch.mean((pred_noise - torch.abs(pred_x.clone().detach() - x2)**2 / dt)**2)
+
+        #Das ist für den Fall, das wir Drift vorhersagen wollen
+        dt = (t2 - t)
+        loss_target = torch.mean((pred_ut - ut)**2)
+        loss_noise = torch.mean((pred_noise - torch.abs(pred_ut.clone().detach() - ut)**2 * dt)**2)
 
         #Losses SDE-Fall vgl TFM code
         #h = (t2-t)*(t-t1)/(t2-t1) #rescale unsere skala auf [t1~0, t2~1] vgl TFM code 
@@ -209,10 +215,13 @@ class DriftDiffusionModel(nn.Module):
                 t = (t_bridges[k] + i * stepsize).expand(no_samples, 1)
                 t2 = (t_bridges[k] + (i+1) * stepsize).expand(no_samples, 1)
                 
-                x2_pred = self.forward(x, t, x_mem, t_mem, t2)
+                # x2_pred = self.forward(x, t, x_mem, t_mem, t2)
+                # drift = (x2_pred - x) / (t2 - t)
+                # sigma = self.noise(x, t, x_mem, t_mem, t2)
+
+                drift = self.forward(x, t, x_mem, t_mem, t2)
                 sigma = self.noise(x, t, x_mem, t_mem, t2)
                 
-                drift = (x2_pred - x) / (t2 - t)
 
                 x_new = x + stepsize * drift + torch.sqrt(stepsize) * torch.sqrt(sigma) * torch.randn_like(x)
                 # x_new = torch.clamp(x_new, 0, 1000) # TODO data dependent choice, adapt!
