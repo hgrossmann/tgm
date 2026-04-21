@@ -1,4 +1,5 @@
 import torch, torch.nn as nn
+import math
 from typing import Optional, Dict, Any
 from tgm.utils.network import create_drift_network, create_uncertainty_network, create_observation_network
 from tgm.utils.memory import get_memory
@@ -52,9 +53,11 @@ class DriftDiffusionModel(nn.Module):
         self.time_sampling = model_cfg.time_sampling
         self.noise = NoiseModel(model_cfg).to(self.device) #NoiseModel
         self.tnext = tnextModel(model_cfg).to(self.device)
-        self.sigma_base = float(model_cfg.sigma) #sigma_base oder wie es im Paper heisst, einfach nur sigma ist eine konstante Zahl
+        #self.sigma_base = float(model_cfg.sigma) #sigma_base oder wie es im Paper heisst, einfach nur sigma ist eine konstante Zahl
+        self.sigma_base = float(0.1)
         self.mu = float(model_cfg.drift) #reale Drift der Trainingsdaten zum Vergleich / Testzwecken
         self.memory_switch = model_cfg.memory_switch #Memory an / aus
+        self.max_likelihood = model_cfg.max_likelihood #max_likelihood an / aus
 
     def forward(self, x, t, x_mem, t_mem, t2): # TODO eventually self.drift should accept these arguments
         """
@@ -95,45 +98,64 @@ class DriftDiffusionModel(nn.Module):
 
         df_long = pd.DataFrame(rows, columns=["traj_id", "t", "x"])
         df_long.to_csv("../output_traj/generated_data_long.csv", index=False)
+
+        if self.max_likelihood == "on":
+            t, idx1, idx2, idx3 = self._draw_t(data, times, mask)
         
-        t, idx_prev = self._draw_t(data, times, mask)
-        
-        # draw x and calculate conditional velocities
-        x1 = data[torch.arange(batch_size, device=self.device), idx_prev]
-        x2 = data[torch.arange(batch_size, device=self.device), idx_prev + 1]
-        t1 = times[torch.arange(batch_size, device=self.device), idx_prev].unsqueeze(1) 
-        t2 = times[torch.arange(batch_size, device=self.device), idx_prev + 1].unsqueeze(1)
+            # draw x and calculate conditional velocities
+            x1 = data[torch.arange(batch_size, device=self.device), idx1]
+            x2 = data[torch.arange(batch_size, device=self.device), idx2]
+            x3 = data[torch.arange(batch_size, device=self.device), idx3]
+            t1 = times[torch.arange(batch_size, device=self.device), idx1].unsqueeze(1) 
+            t2 = times[torch.arange(batch_size, device=self.device), idx2].unsqueeze(1) 
+            t3 = times[torch.arange(batch_size, device=self.device), idx3].unsqueeze(1)
+
+            mu_hat = (x3-x1)/(t3-t1).clamp_min(1e-3)
+            sigma_noise = torch.abs(x2-x1-mu_hat(t2-t1))/(t3-t1)
+        else:
+            t, idx_prev = self._draw_t(data, times, mask)
+            
+            # draw x and calculate conditional velocities
+            x1 = data[torch.arange(batch_size, device=self.device), idx_prev]
+            x3 = data[torch.arange(batch_size, device=self.device), idx_prev + 1]
+            t1 = times[torch.arange(batch_size, device=self.device), idx_prev].unsqueeze(1) 
+            t3 = times[torch.arange(batch_size, device=self.device), idx_prev + 1].unsqueeze(1)
+
+            sigma_noise = self.sigma_base
 
         x_mem, t_mem = get_memory(data, times, idx_prev, self.memory_length)
 
-        mt = (t2-t)/(t2-t1) * x1 + (t-t1)/(t2-t1) * x2 #Mittelwert
-        tau_t = torch.sqrt((t2-t)*(t-t1)/(t2-t1).clamp_min(1e-3))*self.sigma_base
+        mt = (t3-t)/(t3-t1) * x1 + (t-t1)/(t3-t1) * x3 #Mittelwert
+        tau_t = torch.sqrt((t3-t)*(t-t1)/(t3-t1).clamp_min(1e-3))*sigma_noise
         x = mt + tau_t * torch.randn_like(x1) #hierdrauf lernen unsere Netze
 
         #Das ist für den Fall, das wir Drift vorhersagen wollen
-        pred_ut = self.forward(x, t, x_mem, t_mem, t2)
-        ut = (x2-x) / (t2-t).clamp_min(1e-3) 
-        pred_x = x + pred_ut * (t2-t)
+        pred_ut = self.forward(x, t, x_mem, t_mem, t3)
+        ut = (x3-x) / (t3-t).clamp_min(1e-3) 
+        #pred_x = x + pred_ut * (t3-t)
 
-        pred_noise = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
-        # pred_x = self.forward(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t2)
+        pred_noise = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t3)
+        # pred_x = self.forward(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t3)
 
-        #Losses
-        # dt = (t2 - t).clamp_min(1e-3) 
-        # loss_target = torch.mean((pred_x - x2)**2)
-        # loss_noise = torch.mean((pred_noise - torch.abs(pred_x.clone().detach() - x2)**2 / dt)**2)
+        #Losses für Targetprediction
+        # dt = (t3 - t).clamp_min(1e-3) 
+        # loss_target = torch.mean((pred_x - x3)**2)
+        # loss_noise = torch.mean((pred_noise - torch.abs(pred_x.clone().detach() - x3)**2 / dt)**2)
 
         #Das ist für den Fall, das wir Drift vorhersagen wollen
-        dt = (t2 - t)
+        dt = (t3 - t)
         loss_target = torch.mean((pred_ut - ut)**2)
         loss_noise = torch.mean((pred_noise - torch.abs(pred_ut.clone().detach() - ut)**2 * dt)**2)
 
         #Losses SDE-Fall vgl TFM code
-        #h = (t2-t)*(t-t1)/(t2-t1) #rescale unsere skala auf [t1~0, t2~1] vgl TFM code 
-        #loss_target = torch.mean((pred_x + torch.sqrt(h) * torch.sqrt(pred_noise.clone().detach()) * torch.randn_like(x1) - x2)**2)
-        #loss_noise = torch.mean((pred_x.clone().detach() + torch.sqrt(h) * torch.sqrt(pred_noise) * torch.randn_like(x1) - x2)**2)
+        #h = (t3-t)*(t-t1)/(t3-t1) #rescale unsere skala auf [t1~0, t3~1] vgl TFM code 
+        #loss_target = torch.mean((pred_x + torch.sqrt(h) * torch.sqrt(pred_noise.clone().detach()) * torch.randn_like(x1) - x3)**2)
+        #loss_noise = torch.mean((pred_x.clone().detach() + torch.sqrt(h) * torch.sqrt(pred_noise) * torch.randn_like(x1) - x3)**2)
+        s = (t-t1)/(t3-t1)
+        v_star = ((sigma_noise**2*2)+(0.09-sigma_noise**2)/(t3-t1)*(x-x1))/(s*0.09+sigma_noise**2*(1-s))
+        test = (torch.abs(pred_ut.clone().detach() - v_star)**2)*(t3-t)
 
-        return loss_target, loss_noise, pred_noise, pred_x
+        return loss_target, loss_noise, pred_noise, pred_ut, sigma_noise, test
 
     def _draw_t(self, data, times, mask):
         batch_size = data.shape[0]
@@ -157,8 +179,41 @@ class DriftDiffusionModel(nn.Module):
             t2 = times[torch.arange(batch_size, device=self.device), idx_prev_observation + 1] 
             frac = (random_idx % 1)
             t = (t1 + frac * (t2-t1)).unsqueeze(1)
-            
-        return t, idx_prev_observation
+
+        if self.max_likelihood == "on":
+            batch_idx = torch.arange(batch_size, device=self.device)
+            idx_left = idx_prev_observation - 1          # [B]
+            idx_right = idx_prev_observation + 2         # [B]
+            # check ob die Indizes überhaupt valide sind
+            left_valid = idx_left >= 0
+            right_valid = idx_right < nb_timepoints
+            # Distanztensoren default gefüllt mit infinity
+            t_flat = t.squeeze(-1)                       # [B]
+            big = torch.full_like(t_flat, float('inf'))
+            dist_left = big.clone()
+            dist_right = big.clone()
+            # Distanzen nur dort berechnen, wo der Index gültig ist
+            dist_left[left_valid] = torch.abs(
+                t_flat[left_valid] - times[batch_idx[left_valid], idx_left[left_valid]]
+            )
+            dist_right[right_valid] = torch.abs(
+                t_flat[right_valid] - times[batch_idx[right_valid], idx_right[right_valid]]
+            )
+            # Wenn beide gültig: wähle den mit der kleineren Distanz
+            choose_left = dist_left <= dist_right
+            candidate_idx3 = torch.where(choose_left, idx_left, idx_right)
+            # Drei Indizes zusammen
+            indices_three = torch.stack([
+                idx_prev_observation,
+                idx_prev_observation + 1,
+                candidate_idx3
+            ], dim=1)   # -> Form (B, 3)
+            # Sortieren: klein, mittel, groß
+            sorted_idx, _ = torch.sort(indices_three, dim=1)
+
+            return t, sorted_idx[:,0], sorted_idx[:,1], sorted_idx[:,2]
+        else:
+            return t, idx_prev_observation
     
     @torch.no_grad()
     def sample_unif(self, x0, no_bridges, t_start, t_end, stepsize, no_samples=100):

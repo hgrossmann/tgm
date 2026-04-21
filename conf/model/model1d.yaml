@@ -21,3 +21,4 @@ time_sampling: uniform_index # alternative: uniform_time
 #new sigma training
 sigma_width: 128
 memory_switch: off
+max_likelihood: off
