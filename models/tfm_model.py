@@ -53,11 +53,10 @@ class DriftDiffusionModel(nn.Module):
         self.time_sampling = model_cfg.time_sampling
         self.noise = NoiseModel(model_cfg).to(self.device) #NoiseModel
         self.tnext = tnextModel(model_cfg).to(self.device)
-        #self.sigma_base = float(model_cfg.sigma) #sigma_base oder wie es im Paper heisst, einfach nur sigma ist eine konstante Zahl
-        self.sigma_base = float(0.1)
+        self.sigma_base = float(model_cfg.sigma_tau) #sigma_base oder wie es im Paper heisst, einfach nur sigma ist eine konstante Zahl
         self.mu = float(model_cfg.drift) #reale Drift der Trainingsdaten zum Vergleich / Testzwecken
-        self.memory_switch = model_cfg.memory_switch #Memory an / aus
-        self.max_likelihood = model_cfg.max_likelihood #max_likelihood an / aus
+        self.memory_switch = str(model_cfg.memory_switch) #Memory an / aus
+        self.max_likelihood = str(model_cfg.max_likelihood) #max_likelihood an / aus
 
     def forward(self, x, t, x_mem, t_mem, t2): # TODO eventually self.drift should accept these arguments
         """
@@ -101,6 +100,7 @@ class DriftDiffusionModel(nn.Module):
 
         if self.max_likelihood == "on":
             t, idx1, idx2, idx3 = self._draw_t(data, times, mask)
+            idx_prev = idx1
         
             # draw x and calculate conditional velocities
             x1 = data[torch.arange(batch_size, device=self.device), idx1]
@@ -111,7 +111,9 @@ class DriftDiffusionModel(nn.Module):
             t3 = times[torch.arange(batch_size, device=self.device), idx3].unsqueeze(1)
 
             mu_hat = (x3-x1)/(t3-t1).clamp_min(1e-3)
-            sigma_noise = torch.abs(x2-x1-mu_hat(t2-t1))/(t3-t1)
+            sigma_noise = torch.abs(x2-x1-mu_hat*(t2-t1))/(t3-t1).clamp_min(1e-3)
+            sigma_noise = sigma_noise.mean().item()
+            return_sigma_tau = sigma_noise
         else:
             t, idx_prev = self._draw_t(data, times, mask)
             
@@ -122,6 +124,7 @@ class DriftDiffusionModel(nn.Module):
             t3 = times[torch.arange(batch_size, device=self.device), idx_prev + 1].unsqueeze(1)
 
             sigma_noise = self.sigma_base
+            return_sigma_tau = sigma_noise
 
         x_mem, t_mem = get_memory(data, times, idx_prev, self.memory_length)
 
@@ -155,7 +158,7 @@ class DriftDiffusionModel(nn.Module):
         v_star = ((sigma_noise**2*2)+(0.09-sigma_noise**2)/(t3-t1)*(x-x1))/(s*0.09+sigma_noise**2*(1-s))
         test = (torch.abs(pred_ut.clone().detach() - v_star)**2)*(t3-t)
 
-        return loss_target, loss_noise, pred_noise, pred_ut, sigma_noise, test
+        return loss_target, loss_noise, pred_noise, pred_ut, return_sigma_tau, test
 
     def _draw_t(self, data, times, mask):
         batch_size = data.shape[0]

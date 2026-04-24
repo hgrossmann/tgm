@@ -21,28 +21,69 @@ class WandbCallback(Callback):
     def __init__(self, project: str, run_name: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
         self.project = project
         self.run_name = run_name
-        self.config = config or {}
+        self.config = config
 
     def on_train_start(self, trainer, **kwargs):
         if wandb.run is None:
-            wandb.init(
-                project=self.project, name=self.run_name, config=self.config,
-                settings=wandb.Settings(_service_wait=300))
+            init_kwargs = {
+                "project": self.project,
+                "name": self.run_name,
+                "settings": wandb.Settings(
+                    _service_wait=300,
+                    x_disable_stats=True,
+                ),
+            }
+            if self.config is not None:
+                init_kwargs["config"] = self.config
 
-    def on_step_end(self, trainer, step: int, loss: float, **kwargs):
-        wandb.log({"train/loss": loss, "step": step}, step=step)
-    
-    def on_epoch_end(self, trainer, step: int, loss: float, **kwargs):
-        wandb.log({"epoch/loss": loss, "step": step}, step=step)
+            wandb.init(**init_kwargs)
+
+    def on_step_end(self, trainer, step: int, **kwargs):
+        if wandb.run is None:
+            return
+
+        wandb.log({
+            "train/total_loss": kwargs["total_loss"],
+            "train/drift_loss": kwargs["drift_loss"],
+            "train/noise_loss": kwargs["noise_loss"],
+
+            "noise/pred_mean": kwargs["noise_mean"],
+            "noise/sigma_tau": kwargs["sigma_ml"],
+
+            "drift/pred_mean": kwargs["drift_mean"],
+
+            "debug/Lossrest_mean": kwargs["test_mean"],
+        }, step=step)
+
+    def on_epoch_end(self, trainer, step: int, epoch: int, **kwargs):
+        if wandb.run is None:
+            return
+
+        wandb.log({
+            "epoch/total_loss": kwargs["total_loss"],
+            "epoch/drift_loss": kwargs["drift_loss"],
+            "epoch/noise_loss": kwargs["noise_loss"],
+
+            "epoch/noise_mean": kwargs["noise_mean"],
+            "epoch/sigma_tau": kwargs["sigma_ml"],
+            "epoch/drift_mean": kwargs["drift_mean"],
+            "epoch/Lossrest_mean": kwargs["test_mean"],
+        }, step=step)
 
     def on_validation_end(self, trainer, **kwargs):
-        # Requires 'step', then prefixes selected kwargs with 'val/' and logs them.
-        if "step" not in kwargs: return
-        log_dict = {f"val/{k}": v for k, v in kwargs.items() if k in ["mmd", "sinkhorn"]}
-        wandb.log(log_dict, step = kwargs["step"])
+        if wandb.run is None:
+            return
+        if "step" not in kwargs:
+            return
+
+        wandb.log({
+            "val/mmd": float(kwargs["mmd"]),
+            "val/sinkhorn": float(kwargs["sinkhorn"]),
+        }, step=kwargs["step"])
 
     def on_train_end(self, trainer, **kwargs):
-        wandb.finish()
+        if wandb.run is not None:
+            wandb.finish()
         
         
 class PrintCallback(Callback):  
@@ -56,10 +97,10 @@ class PrintCallback(Callback):
         self._t0 = time.time()
         self.no_epochs = no_epochs
 
-    def on_epoch_end(self, trainer, epoch: int, loss: float, **kwargs):
+    def on_epoch_end(self, trainer, epoch: int, total_loss: float, **kwargs):
         if not self._is_main(): return
-        print(f"Epoch {epoch}: loss {loss:.4f}", end="")
-        
+        print(f"Epoch {epoch}: loss {total_loss:.4f}", end="")
+            
     def on_validation_end(self, trainer, mmd, sinkhorn, **kwargs):
         if not self._is_main(): return
         print(f" mmd {mmd:.4f}, sinkhorn {sinkhorn: .4f}")
@@ -121,9 +162,9 @@ class SavingCallback(Callback):
         self.sinkhorn_list = []
         self.mmd_list = []
         
-    def on_epoch_end(self, trainer, loss: float, **kwargs):
+    def on_epoch_end(self, trainer, total_loss: float, **kwargs):
         if not self._is_main(): return
-        self.loss_list.append(loss)
+        self.loss_list.append(total_loss)
         
     def on_validation_end(self, trainer, sinkhorn: float, mmd: float, trajectories, times, **kwargs):
         if not self._is_main(): return

@@ -52,7 +52,15 @@ def main(cfg: DictConfig):
     optimizer_noise = torch.optim.Adam(model.noise.parameters(), lr=cfg.train.lr)
 
     callbacks = [PrintCallback(), SavingCallback(cfg), 
-                 WandbCallback(project = os.getenv("WANDB_PROJECT", "TGM-debug"), run_name = os.getenv("WANDB_RUN_NAME", "test_run"))]
+                 WandbCallback(project = "TrajectoryFlowMatching", 
+                               run_name = os.getenv("WANDB_RUN_NAME", "test_run"),
+                               config = {
+                                   "no_epochs": cfg.train.no_epochs,
+                                   "drift": cfg.model.drift,
+                                   "sigma": cfg.model.sigma,
+                                   "max_likelihood_switch": cfg.model.max_likelihood,
+                                   "sigma_base":cfg.model.sigma_tau
+                               })]
     
     trainer = Trainer(cfg.train, model, optimizer_target, optimizer_noise, train_loader, val_sub, val_full, callbacks)
     

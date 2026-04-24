@@ -60,7 +60,17 @@ class Trainer:
                 epoch_loss = epoch_loss_target + epoch_loss_noise
                 #epoch_loss = (j / (j + 1)) * epoch_loss + (1 / (j + 1)) * loss
                 
-                self._cb("on_step_end", step=global_step, loss=loss)
+                self._cb(
+                    "on_step_end",
+                    step=global_step,
+                    total_loss=loss,
+                    drift_loss=loss_target,
+                    noise_loss=loss_noise,
+                    noise_mean=noise.mean().detach().item(),
+                    drift_mean=target.mean().detach().item(),
+                    sigma_ml=float(sigma_ML),
+                    test_mean=test.mean().detach().item(),
+                )
 
             print(" ")
             print("Epoch noise: ", epoch_noise)
@@ -69,7 +79,18 @@ class Trainer:
             print("Lossrest: ", epoch_test)
             print(" ")
 
-            self._cb("on_epoch_end", step=global_step, epoch = i, loss=epoch_loss)
+            self._cb(
+                "on_epoch_end",
+                step=global_step,
+                epoch=i,
+                total_loss=float(epoch_loss),
+                drift_loss=float(epoch_loss_target),
+                noise_loss=float(epoch_loss_noise),
+                noise_mean=epoch_noise.detach().item() if torch.is_tensor(epoch_noise) else float(epoch_noise),
+                drift_mean=epoch_target.detach().item() if torch.is_tensor(epoch_target) else float(epoch_target),
+                sigma_ml=float(epoch_ml),
+                test_mean=epoch_test.detach().item() if torch.is_tensor(epoch_test) else float(epoch_test),
+            )
     
             mmd, sinkhorn, trajectories, times = self._validate()
                 
