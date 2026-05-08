@@ -119,8 +119,8 @@ def make_loaders(data_cfg: DictConfig, train_cfg: DictConfig):
     test_x  = torch.load(root / "test_data.pt",  map_location=train_cfg.device, weights_only=True)
     test_t  = torch.load(root / "test_times.pt", map_location=train_cfg.device, weights_only=True)
 
-    train = _subsample(train_x, train_t, data_cfg.T_sub, data_cfg.fix_min_max, train_cfg.manual_seed)
-    val   = _subsample(val_x, val_t, data_cfg.T_sub, data_cfg.fix_min_max, train_cfg.manual_seed)
+    train = _subsample(train_x, train_t, data_cfg.T_sub, data_cfg.fix_min_max, train_cfg.manual_seed, data_cfg.time_spacing)
+    val   = _subsample(val_x, val_t, data_cfg.T_sub, data_cfg.fix_min_max, train_cfg.manual_seed, data_cfg.time_spacing)
     
     train_ds = StockDataset(train["x"], train["t"])
     train_loader = DataLoader(train_ds, batch_size=train_cfg.batch_size, shuffle=True, num_workers=0, pin_memory=False)
@@ -160,7 +160,7 @@ def dataset_exists(cfg: DictConfig) -> bool:
     return not need_regen
 
 
-def _subsample(x: torch.Tensor, t: torch.Tensor, T_sub: int, fix_min_max: bool, seed: int) -> dict:
+def _subsample(x: torch.Tensor, t: torch.Tensor, T_sub: int, fix_min_max: bool, seed: int, time_spacing: str) -> dict:
     """
     Per-trajectory subsampling.
     Inputs:
@@ -173,17 +173,30 @@ def _subsample(x: torch.Tensor, t: torch.Tensor, T_sub: int, fix_min_max: bool, 
     _seed_all(seed)
     device = x.device
 
-    if fix_min_max:
-        if T_sub < 2:
-            raise ValueError("T_sub must be >= 2 when fix_min_max=True.")
-        idx_interior = torch.rand(N, T - 2, device=device).argsort(dim=1)[:, : T_sub - 2] + 1  # [N, T_sub-2]
-        idx, _ = torch.sort(idx_interior, dim=1)
-        idx_min = torch.zeros(N, 1, dtype=torch.long, device=device)
-        idx_max = torch.full((N, 1), fill_value=T-1, dtype=torch.long, device=device)
-        idx = torch.cat((idx_min, idx, idx_max), dim=1)
-    else:
-        idx = torch.rand(N, T, device=device).argsort(dim=1)[:, :T_sub]  # [N, T_sub]
-        idx, _ = torch.sort(idx, dim=1)
+    if time_spacing not in {"regular", "irregular"}:
+        raise ValueError("time_spacing must be either 'regular' or 'irregular'.")
+
+    if time_spacing == "irregular":
+        if fix_min_max:
+            if T_sub < 2:
+                raise ValueError("T_sub must be >= 2 when fix_min_max=True.")
+            idx_interior = torch.rand(N, T - 2, device=device).argsort(dim=1)[:, : T_sub - 2] + 1  # [N, T_sub-2]
+            idx, _ = torch.sort(idx_interior, dim=1)
+            idx_min = torch.zeros(N, 1, dtype=torch.long, device=device)
+            idx_max = torch.full((N, 1), fill_value=T-1, dtype=torch.long, device=device)
+            idx = torch.cat((idx_min, idx, idx_max), dim=1)
+        else:
+            idx = torch.rand(N, T, device=device).argsort(dim=1)[:, :T_sub]  # [N, T_sub]
+            idx, _ = torch.sort(idx, dim=1)
+    else: 
+        if fix_min_max:
+            if T_sub < 2:
+                raise ValueError("T_sub must be >= 2 when fix_min_max=True.")
+            idx_1d = torch.linspace(0, T - 1, T_sub, device=device).round().long()
+        else:
+            idx_1d = ((torch.arange(T_sub, device=device, dtype=torch.float32) + 0.5)* T / T_sub- 0.5).round().long()
+            idx_1d = idx_1d.clamp(0, T - 1)
+        idx = idx_1d.unsqueeze(0).expand(N, T_sub)
 
     # Gather x per series
     row = torch.arange(N, device=device).unsqueeze(1).expand(N, T_sub)      # [N, T_sub]

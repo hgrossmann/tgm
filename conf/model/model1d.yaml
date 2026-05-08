@@ -21,5 +21,8 @@ time_sampling: uniform_index # alternative: uniform_time
 #new sigma training
 sigma_width: 128
 memory_switch: "off"
-max_likelihood: "on"
+bridge_noise_mode: ml # constant, ml oder learned
 sigma_tau: 0.1
+sigma_tau_lr: 1e-2
+
+trainable_parts: ["drift", "uncertainty"] #["drift", "uncertainty"]

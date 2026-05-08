@@ -33,3 +33,4 @@ v0: null
 # subsampling procedure
 T_sub: 10 # number of points per trajectory after irregular subsampling
 fix_min_max: false # whether first and last point are always at t_min and t_max (here 0 and maturity)
+time_spacing: regular #regular or irregular

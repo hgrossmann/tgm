@@ -86,10 +86,15 @@ def generate_trajectory(model, x0, n_steps, dt, device="cpu"):
         # pred_x = model.drift(inpu)
         # mu = (pred_x-x)/(t2-t)
         # sigma = model.noise(x, t, x_mem, t_mem, t2)
-
-        mu = model.drift(inpu)
-        sigma = model.noise(x, t, x_mem, t_mem, t2)
-
+        if "drift" in model.trainable_parts:
+            mu = model.drift(inpu)
+        else:
+            mu = torch.full_like(x, model.mu)
+        if "uncertainty" in model.trainable_parts:
+            sigma = model.noise(x, t, x_mem, t_mem, t2)
+        else:
+            sigma = torch.full_like(x, model.sigma_gt**2)
+            
         x = x + mu * dt_t + torch.sqrt(sigma) * torch.sqrt(dt_t) * torch.randn_like(x)
 
         # Append to histories (for next iteration)

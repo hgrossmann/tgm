@@ -53,10 +53,15 @@ class DriftDiffusionModel(nn.Module):
         self.time_sampling = model_cfg.time_sampling
         self.noise = NoiseModel(model_cfg).to(self.device) #NoiseModel
         self.tnext = tnextModel(model_cfg).to(self.device)
-        self.sigma_base = float(model_cfg.sigma_tau) #sigma_base oder wie es im Paper heisst, einfach nur sigma ist eine konstante Zahl
         self.mu = float(model_cfg.drift) #reale Drift der Trainingsdaten zum Vergleich / Testzwecken
         self.memory_switch = str(model_cfg.memory_switch) #Memory an / aus
-        self.max_likelihood = str(model_cfg.max_likelihood) #max_likelihood an / aus
+        
+        self.bridge_noise_mode = str(model_cfg.bridge_noise_mode) #bridge_noise_mode constant / ml / learned
+        self.sigma_gt = float(model_cfg.sigma)
+        self.sigma_base = float(model_cfg.sigma_tau) #sigma_base oder wie es im Paper heisst, einfach nur sigma ist eine konstante Zahl
+        self.sigma_tau_param = nn.Parameter(torch.tensor(float(model_cfg.sigma_tau**2), device=self.device, dtype=torch.float32))
+        self.sigma_tau_lr = float(model_cfg.sigma_tau_lr)
+        self.trainable_parts = model_cfg.trainable_parts
 
     def forward(self, x, t, x_mem, t_mem, t2): # TODO eventually self.drift should accept these arguments
         """
@@ -98,7 +103,7 @@ class DriftDiffusionModel(nn.Module):
         df_long = pd.DataFrame(rows, columns=["traj_id", "t", "x"])
         df_long.to_csv("../output_traj/generated_data_long.csv", index=False)
 
-        if self.max_likelihood == "on":
+        if self.bridge_noise_mode == "ml":
             t, idx1, idx2, idx3 = self._draw_t(data, times, mask)
             idx_prev = idx1
         
@@ -110,10 +115,10 @@ class DriftDiffusionModel(nn.Module):
             t2 = times[torch.arange(batch_size, device=self.device), idx2].unsqueeze(1) 
             t3 = times[torch.arange(batch_size, device=self.device), idx3].unsqueeze(1)
 
-            mu_hat = (x3-x1)/(t3-t1).clamp_min(1e-3)
-            sigma_noise = torch.abs(x2-x1-mu_hat*(t2-t1))/(t3-t1).clamp_min(1e-3)
-            sigma_noise = sigma_noise.mean().item()
-            return_sigma_tau = sigma_noise
+            lt = (t3-t2)*(t2-t1)/(t3-t1)
+            mt = (t3-t2)/(t3-t1)*x1 + (t2-t1)/(t3-t1)*x3
+            bridge_noise = (x2-mt)**2/lt
+            bridge_noise = torch.sqrt(bridge_noise.mean())
         else:
             t, idx_prev = self._draw_t(data, times, mask)
             
@@ -123,21 +128,31 @@ class DriftDiffusionModel(nn.Module):
             t1 = times[torch.arange(batch_size, device=self.device), idx_prev].unsqueeze(1) 
             t3 = times[torch.arange(batch_size, device=self.device), idx_prev + 1].unsqueeze(1)
 
-            sigma_noise = self.sigma_base
-            return_sigma_tau = sigma_noise
+            if self.bridge_noise_mode == "constant":
+                bridge_noise = torch.tensor(self.sigma_base, device=self.device, dtype=data.dtype)
+            elif self.bridge_noise_mode == "learned":
+                bridge_noise = torch.sqrt(self.sigma_tau_param.clamp(min=1e-8))
+            else:
+                raise ValueError(f"Unknown bridge_noise_mode: {self.bridge_noise_mode}")
 
         x_mem, t_mem = get_memory(data, times, idx_prev, self.memory_length)
 
         mt = (t3-t)/(t3-t1) * x1 + (t-t1)/(t3-t1) * x3 #Mittelwert
-        tau_t = torch.sqrt((t3-t)*(t-t1)/(t3-t1).clamp_min(1e-3))*sigma_noise
+        tau_t = torch.sqrt((t3-t)*(t-t1)/(t3-t1).clamp_min(1e-3))*bridge_noise
         x = mt + tau_t * torch.randn_like(x1) #hierdrauf lernen unsere Netze
 
         #Das ist für den Fall, das wir Drift vorhersagen wollen
-        pred_ut = self.forward(x, t, x_mem, t_mem, t3)
+        if "drift" in self.trainable_parts:
+            pred_ut = self.forward(x, t, x_mem, t_mem, t3)
+        else: 
+            pred_ut = self.mu * torch.ones_like(x)
         ut = (x3-x) / (t3-t).clamp_min(1e-3) 
         #pred_x = x + pred_ut * (t3-t)
 
-        pred_noise = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t3)
+        if "uncertainty" in self.trainable_parts:
+            pred_noise = self.noise(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t3)
+        else:
+            pred_noise = (self.sigma_gt**2)* torch.ones_like(x)
         # pred_x = self.forward(x, t = t, x_mem = x_mem, t_mem = t_mem, t2 = t3)
 
         #Losses für Targetprediction
@@ -155,10 +170,10 @@ class DriftDiffusionModel(nn.Module):
         #loss_target = torch.mean((pred_x + torch.sqrt(h) * torch.sqrt(pred_noise.clone().detach()) * torch.randn_like(x1) - x3)**2)
         #loss_noise = torch.mean((pred_x.clone().detach() + torch.sqrt(h) * torch.sqrt(pred_noise) * torch.randn_like(x1) - x3)**2)
         s = (t-t1)/(t3-t1)
-        v_star = ((sigma_noise**2*2)+(0.09-sigma_noise**2)/(t3-t1)*(x-x1))/(s*0.09+sigma_noise**2*(1-s))
+        v_star = ((bridge_noise**2*2)+(0.09-bridge_noise**2)/(t3-t1)*(x-x1))/(s*0.09+bridge_noise**2*(1-s))
         test = (torch.abs(pred_ut.clone().detach() - v_star)**2)*(t3-t)
 
-        return loss_target, loss_noise, pred_noise, pred_ut, return_sigma_tau, test
+        return loss_target, loss_noise, pred_noise, pred_ut, bridge_noise, test
 
     def _draw_t(self, data, times, mask):
         batch_size = data.shape[0]
@@ -183,7 +198,7 @@ class DriftDiffusionModel(nn.Module):
             frac = (random_idx % 1)
             t = (t1 + frac * (t2-t1)).unsqueeze(1)
 
-        if self.max_likelihood == "on":
+        if self.bridge_noise_mode == "ml":
             batch_idx = torch.arange(batch_size, device=self.device)
             idx_left = idx_prev_observation - 1          # [B]
             idx_right = idx_prev_observation + 2         # [B]
@@ -276,11 +291,17 @@ class DriftDiffusionModel(nn.Module):
                 # x2_pred = self.forward(x, t, x_mem, t_mem, t2)
                 # drift = (x2_pred - x) / (t2 - t)
                 # sigma = self.noise(x, t, x_mem, t_mem, t2)
-
-                drift = self.forward(x, t, x_mem, t_mem, t2)
-                sigma = self.noise(x, t, x_mem, t_mem, t2)
                 
+                if "drift" in self.trainable_parts:
+                    drift = self.forward(x, t, x_mem, t_mem, t2)
+                else:
+                    drift = torch.full_like(x, self.mu)
 
+                if "uncertainty" in self.trainable_parts:
+                    sigma = self.noise(x, t, x_mem, t_mem, t2)
+                else:
+                    sigma = torch.full_like(x, self.sigma_gt**2)
+                
                 x_new = x + stepsize * drift + torch.sqrt(stepsize) * torch.sqrt(sigma) * torch.randn_like(x)
                 # x_new = torch.clamp(x_new, 0, 1000) # TODO data dependent choice, adapt!
                 

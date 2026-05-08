@@ -35,13 +35,13 @@ class Trainer:
 
             epoch_noise = 0.0
             epoch_target = 0.0
-            epoch_ml = 0.0
+            epoch_bn = 0.0
             epoch_test = 0.0
             
             for j, batch in enumerate(self.train_loader):
                 global_step += 1
                 #loss = self._step(batch)
-                loss_target, loss_noise, noise, target, sigma_ML, test = self._step(batch)
+                loss_target, loss_noise, noise, target, bridge_noise, test = self._step(batch)
                 #if j%10 == 0:
                 #    print("Batch", j)
                 #    print("loss-target: ", loss_target)
@@ -54,7 +54,7 @@ class Trainer:
 
                 epoch_noise = (j / (j + 1)) * epoch_noise + (1 / (j + 1)) * noise.mean().detach()
                 epoch_target = (j / (j + 1)) * epoch_target + (1 / (j + 1)) * target.mean().detach()
-                epoch_ml = (j / (j + 1)) * epoch_ml + (1 / (j + 1)) * sigma_ML
+                epoch_bn = (j / (j + 1)) * epoch_bn + (1 / (j + 1)) * bridge_noise
                 epoch_test = (j / (j + 1)) * epoch_test + (1 / (j + 1)) * test.mean().detach()
 
                 epoch_loss = epoch_loss_target + epoch_loss_noise
@@ -68,14 +68,14 @@ class Trainer:
                     noise_loss=loss_noise,
                     noise_mean=noise.mean().detach().item(),
                     drift_mean=target.mean().detach().item(),
-                    sigma_ml=float(sigma_ML),
+                    bridge_noise=float(bridge_noise),
                     test_mean=test.mean().detach().item(),
                 )
 
             print(" ")
             print("Epoch noise: ", epoch_noise)
             print("Epoch Drift: ", epoch_target)
-            print("Epoch max likelihood noise: ", epoch_ml)
+            print("Epoch Bridge noise: ", epoch_bn)
             print("Lossrest: ", epoch_test)
             print(" ")
 
@@ -88,7 +88,7 @@ class Trainer:
                 noise_loss=float(epoch_loss_noise),
                 noise_mean=epoch_noise.detach().item() if torch.is_tensor(epoch_noise) else float(epoch_noise),
                 drift_mean=epoch_target.detach().item() if torch.is_tensor(epoch_target) else float(epoch_target),
-                sigma_ml=float(epoch_ml),
+                bridge_noise=float(epoch_bn),
                 test_mean=epoch_test.detach().item() if torch.is_tensor(epoch_test) else float(epoch_test),
             )
     
@@ -141,22 +141,36 @@ class Trainer:
         self.optimizer_target.zero_grad()
 
         #loss_target = self.model.loss(batch)
-        loss_target, loss_noise, cond_noise, xt, noise, test = self.model.loss(batch)
-        if not torch.isfinite(loss_target):
-            print("Non-finite target loss, skipping step.")
-        else:
-            loss_target.backward(retain_graph=True)
-            torch.nn.utils.clip_grad_norm_(list(self.model.drift.parameters()) + list(self.model.tnext.parameters()), 1.0)
-            self.optimizer_target.step()
+        loss_target, loss_noise, cond_noise, xt, bridge_noise, test = self.model.loss(batch)
+        
+        if self.model.bridge_noise_mode == "learned":
+            if self.model.sigma_tau_param.grad is not None:
+                self.model.sigma_tau_param.grad.zero_()
+
+        if "drift" in self.model.trainable_parts:
+            if not torch.isfinite(loss_target):
+                print("Non-finite target loss, skipping step.")
+            else:
+                loss_target.backward(retain_graph=True)
+                torch.nn.utils.clip_grad_norm_(list(self.model.drift.parameters()) + list(self.model.tnext.parameters()), 1.0)
+                self.optimizer_target.step()
 
         self.optimizer_noise.zero_grad()
-        if not torch.isfinite(loss_noise):
-            print("Non-finite noise loss, skipping step.")
-        else:
-            loss_noise.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.noise.parameters(), 1.0)
-            self.optimizer_noise.step()
-        return loss_target.item(), loss_noise.item(), cond_noise, xt, noise, test
+        if "uncertainty" in self.model.trainable_parts:
+            if not torch.isfinite(loss_noise):
+                print("Non-finite noise loss, skipping step.")
+            else:
+                loss_noise.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.noise.parameters(), 1.0)
+                self.optimizer_noise.step()
+
+        if self.model.bridge_noise_mode == "learned":
+            with torch.no_grad():
+                self.model.sigma_tau_param -= (self.model.sigma_tau_lr * self.model.sigma_tau_param.grad)
+                self.model.sigma_tau_param.clamp_(min=1e-5)
+                self.model.sigma_tau_param.grad = None
+
+        return loss_target.item(), loss_noise.item(), cond_noise, xt, bridge_noise.item(), test
     
     def _cb(self, name: str, **kw):
         for cb in self._callbacks:

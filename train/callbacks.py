@@ -48,7 +48,7 @@ class WandbCallback(Callback):
             "train/noise_loss": kwargs["noise_loss"],
 
             "noise/pred_mean": kwargs["noise_mean"],
-            "noise/sigma_tau": kwargs["sigma_ml"],
+            "noise/bridge_noise": kwargs["bridge_noise"],
 
             "drift/pred_mean": kwargs["drift_mean"],
 
@@ -65,7 +65,7 @@ class WandbCallback(Callback):
             "epoch/noise_loss": kwargs["noise_loss"],
 
             "epoch/noise_mean": kwargs["noise_mean"],
-            "epoch/sigma_tau": kwargs["sigma_ml"],
+            "epoch/bridge_noise": kwargs["bridge_noise"],
             "epoch/drift_mean": kwargs["drift_mean"],
             "epoch/Lossrest_mean": kwargs["test_mean"],
         }, step=step)

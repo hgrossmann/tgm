@@ -58,8 +58,11 @@ def main(cfg: DictConfig):
                                    "no_epochs": cfg.train.no_epochs,
                                    "drift": cfg.model.drift,
                                    "sigma": cfg.model.sigma,
-                                   "max_likelihood_switch": cfg.model.max_likelihood,
-                                   "sigma_base":cfg.model.sigma_tau
+                                   "Modus (noise)": cfg.model.bridge_noise_mode,
+                                   "sigma_base":cfg.model.sigma_tau,
+                                   "stepsize training":cfg.data.T_sub,
+                                   "time spacing":cfg.data.time_spacing,
+                                   "trainable parts": cfg.model.trainable_parts
                                })]
     
     trainer = Trainer(cfg.train, model, optimizer_target, optimizer_noise, train_loader, val_sub, val_full, callbacks)
