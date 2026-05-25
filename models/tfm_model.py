@@ -118,7 +118,8 @@ class DriftDiffusionModel(nn.Module):
             lt = (t3-t2)*(t2-t1)/(t3-t1)
             mt = (t3-t2)/(t3-t1)*x1 + (t2-t1)/(t3-t1)*x3
             bridge_noise = (x2-mt)**2/lt
-            bridge_noise = torch.sqrt(bridge_noise.mean())
+            #bridge_noise = torch.sqrt(bridge_noise.mean())
+            bridge_noise = torch.sqrt(bridge_noise)
         else:
             t, idx_prev = self._draw_t(data, times, mask)
             
@@ -136,6 +137,9 @@ class DriftDiffusionModel(nn.Module):
                 raise ValueError(f"Unknown bridge_noise_mode: {self.bridge_noise_mode}")
 
         x_mem, t_mem = get_memory(data, times, idx_prev, self.memory_length)
+
+        #print(f"t={t[1, 0]}: t_mem[1] = {t_mem[1, :, 0].cpu().numpy()}")
+        #print(f"t={t[1, 0]}: x_mem[1] = {x_mem[1, :, 0].cpu().numpy()}")
 
         mt = (t3-t)/(t3-t1) * x1 + (t-t1)/(t3-t1) * x3 #Mittelwert
         tau_t = torch.sqrt((t3-t)*(t-t1)/(t3-t1).clamp_min(1e-3))*bridge_noise

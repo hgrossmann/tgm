@@ -1,6 +1,6 @@
 from pathlib import Path
 from hydra.utils import to_absolute_path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import json, hashlib
 import numpy as np
 import torch
@@ -26,19 +26,34 @@ def create_dataset(cfg: DictConfig):
     for split, size, seed in (("train", cfg.size_train, cfg.seed_train), 
                         ("val", cfg.size_val, cfg.seed_val), 
                         ("test", cfg.size_test, cfg.seed_test)):
-        x, t = _gen_once(cfg, size, seed)
-        p_data, p_times, _ = _store_paths(root, split)
+        x, t, z = _gen_once(cfg, size, seed)
+        p_data, p_times, p_labels, _ = _store_paths(root, split)
         torch.save(x, p_data)
         torch.save(t, p_times)
+        torch.save(z, p_labels)
 
     # write minimal manifest
-    _, _, manifest_p = _store_paths(root, "train")
+    _, _, _, manifest_p = _store_paths(root, "train")
     manifest_p.write_text(json.dumps(_to_plain(_manifest_payload(cfg)), indent=2))
 
     return
 
 
 def _gen_once(cfg: DictConfig, size: int, seed: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    returns x:[N,T,D], t:[T], z:[N], 0 = BM1, 1 = BM2
+    """
+    mixture_cfg = getattr(cfg, "mixture", None)
+
+    if mixture_cfg is not None and mixture_cfg.enabled:
+        return _gen_mixture_once(cfg, size, seed)
+
+    x, t = _gen_single_once(cfg, size, seed)
+    z = torch.zeros(size, dtype=torch.long)
+    return x, t, z
+
+
+def _gen_single_once(cfg: DictConfig, size: int, seed: int) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Returns x:[N,T,D] CPU float32 and t:[T] CPU float32 built from the returned dt.
     N = nb of paths, T = nb of time points, D = dimension of observations
@@ -56,6 +71,59 @@ def _gen_once(cfg: DictConfig, size: int, seed: int) -> Tuple[torch.Tensor, torc
     t = torch.linspace(0.0, (T - 1) * float(dt), T, dtype=torch.float32)
     return x, t
 
+def _gen_mixture_once(cfg: DictConfig, size: int, seed: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Generate a mixture of two Brownian motions.
+
+    cfg.mixture.p_bm1 gives the fraction of paths from BM1.
+    The rest comes from BM2.
+
+    Returns: x:[N, T, D] t:[T]
+    """
+    p_bm1 = float(cfg.mixture.p_bm1)
+
+    if not (0.0 <= p_bm1 <= 1.0):
+        raise ValueError("cfg.mixture.p_bm1 must be between 0 and 1.")
+
+    n1 = int(round(size * p_bm1))
+    n2 = size - n1
+
+    # Copy cfg so we can override drift/volatility separately
+    cfg1 = cfg.copy()
+    cfg2 = cfg.copy()
+
+    # BM1 params
+    cfg1.drift = cfg.mixture.bm1.drift
+    cfg1.volatility = cfg.mixture.bm1.volatility
+    cfg1.S0 = cfg.mixture.bm1.S0
+    # BM2 params
+    cfg2.drift = cfg.mixture.bm2.drift
+    cfg2.volatility = cfg.mixture.bm2.volatility
+    cfg2.S0 = cfg.mixture.bm2.S0
+
+    # Generate both groups with different deterministic seeds
+    x1, t1 = _gen_single_once(cfg1, n1, seed + 11)
+    x2, t2 = _gen_single_once(cfg2, n2, seed + 23)
+
+    if not torch.allclose(t1, t2):
+        raise ValueError("BM1 and BM2 produced different time grids.")
+
+    # Concatenate: first BM1, then BM2
+    x = torch.cat([x1, x2], dim=0)
+
+    # Labels: 0 = BM1, 1 = BM2
+    z = torch.cat([torch.zeros(n1, dtype=torch.long),torch.ones(n2, dtype=torch.long)], dim=0)
+
+    # Shuffle so batches contain a random mix of BM1/BM2
+    g = torch.Generator(device="cpu")
+    g.manual_seed(seed + 37)
+    perm = torch.randperm(size, generator=g).cpu()
+
+    x = x[perm]
+    z = z[perm]
+
+    return x, t1, z
+
 
 def _manifest_payload(cfg: DictConfig) -> Dict[str, Any]:
     gen = {
@@ -65,14 +133,25 @@ def _manifest_payload(cfg: DictConfig) -> Dict[str, Any]:
         "mean": getattr(cfg, "mean", None),
         "speed": getattr(cfg, "speed", None),
         "correlation": getattr(cfg, "correlation", None),
+
         "n_series": cfg.n_series,
         "n_steps": cfg.n_steps,
+        "size_train": cfg.size_train,
+        "size_val": cfg.size_val,
+        "size_test": cfg.size_test,
+
         "S0": cfg.S0,
         "maturity": cfg.maturity,
         "sine_coeff": getattr(cfg, "sine_coeff", None),
         "scheme": getattr(cfg, "scheme", "euler"),
         "return_vol": getattr(cfg, "return_vol", False),
         "v0": getattr(cfg, "v0", None),
+
+        "T_sub": cfg.T_sub,
+        "time_spacing": cfg.time_spacing,
+
+        "mixture": getattr(cfg, "mixture", None),
+
         "seeds": {
             "train": cfg.seed_train,
             "val": cfg.seed_val,
@@ -87,12 +166,13 @@ def _manifest_payload(cfg: DictConfig) -> Dict[str, Any]:
 # ----------------------------
 
 class StockDataset(Dataset):
-    def __init__(self, x: torch.Tensor, t: torch.Tensor):
-        self.x, self.t = x, t  # x:[N,T,D], t:[N,T]
+    def __init__(self, x: torch.Tensor, t: torch.Tensor, z: Optional[torch.Tensor] = None):
+        self.x, self.t, self.z = x, t, z  # x:[N,T,D], t:[N,T], z:[]
     def __len__(self): return self.x.shape[0]
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
-        return {"x": self.x[i], "t": self.t[i]}
-
+        out = {"x": self.x[i], "t": self.t[i]}
+        if self.z is not None: out["z"] = self.z[i]
+        return out
 
 def make_loaders(data_cfg: DictConfig, train_cfg: DictConfig):
     """
@@ -119,16 +199,20 @@ def make_loaders(data_cfg: DictConfig, train_cfg: DictConfig):
     test_x  = torch.load(root / "test_data.pt",  map_location=train_cfg.device, weights_only=True)
     test_t  = torch.load(root / "test_times.pt", map_location=train_cfg.device, weights_only=True)
 
+    train_z = torch.load(root / "train_labels.pt", map_location=train_cfg.device, weights_only=True)
+    val_z   = torch.load(root / "val_labels.pt", map_location=train_cfg.device, weights_only=True)
+    test_z  = torch.load(root / "test_labels.pt", map_location=train_cfg.device, weights_only=True)
+
     train = _subsample(train_x, train_t, data_cfg.T_sub, data_cfg.fix_min_max, train_cfg.manual_seed, data_cfg.time_spacing)
     val   = _subsample(val_x, val_t, data_cfg.T_sub, data_cfg.fix_min_max, train_cfg.manual_seed, data_cfg.time_spacing)
     
-    train_ds = StockDataset(train["x"], train["t"])
+    train_ds = StockDataset(train["x"], train["t"], train_z)
     train_loader = DataLoader(train_ds, batch_size=train_cfg.batch_size, shuffle=True, num_workers=0, pin_memory=False)
     
-    val_sub  = {"x": val["x"], "t": val["t"]}
+    val_sub  = {"x": val["x"], "t": val["t"], "z": val_z}
     
-    val_full = {"x": val_x, "t": val_t.unsqueeze(0).expand(val_x.shape[0], -1)}
-    test_full = {"x": test_x, "t": test_t.unsqueeze(0).expand(test_x.shape[0], -1)}
+    val_full = {"x": val_x, "t": val_t.unsqueeze(0).expand(val_x.shape[0], -1), "z": val_z}
+    test_full = {"x": test_x, "t": test_t.unsqueeze(0).expand(test_x.shape[0], -1), "z": test_z}
 
     return train_loader, val_sub, val_full, test_full
 
@@ -138,7 +222,7 @@ def dataset_exists(cfg: DictConfig) -> bool:
     Check if {train,val,test}_{data,times}.pt exists and manifest hash fits.
     """
     root = Path(to_absolute_path(cfg.save_dir))
-    _, _, manifest_p = _store_paths(root, "train")
+    _, _, _, manifest_p = _store_paths(root, "train")
 
     desired = _manifest_payload(cfg)
     need_regen = True
@@ -149,8 +233,8 @@ def dataset_exists(cfg: DictConfig) -> bool:
                 # verify files exist
                 ok = True
                 for split in ("train", "val", "test"):
-                    p_data, p_times, _ = _store_paths(root, split)
-                    ok = ok and p_data.exists() and p_times.exists()
+                    p_data, p_times, p_labels, _ = _store_paths(root, split)
+                    ok = ok and p_data.exists() and p_times.exists() and p_labels.exists()
                 need_regen = not ok
             else:
                 need_regen = True
@@ -244,6 +328,7 @@ def _store_paths(root: Path, split: str) -> Tuple[Path, Path, Path]:
     return (
         root / f"{split}_data.pt",
         root / f"{split}_times.pt",
+        root / f"{split}_labels.pt",
         root / "manifest.json",
     )
 

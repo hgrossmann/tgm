@@ -55,15 +55,35 @@ def main(cfg: DictConfig):
                  WandbCallback(project = "TrajectoryFlowMatching", 
                                run_name = os.getenv("WANDB_RUN_NAME", "test_run"),
                                config = {
-                                   "no_epochs": cfg.train.no_epochs,
-                                   "drift": cfg.model.drift,
-                                   "sigma": cfg.model.sigma,
-                                   "Modus (noise)": cfg.model.bridge_noise_mode,
-                                   "sigma_base":cfg.model.sigma_tau,
-                                   "stepsize training":cfg.data.T_sub,
-                                   "time spacing":cfg.data.time_spacing,
-                                   "trainable parts": cfg.model.trainable_parts
-                               })]
+                                    "no_epochs": cfg.train.no_epochs,
+                                    "trainable parts": cfg.model.trainable_parts,
+                                    
+                                    # memory
+                                    "memory/switch": cfg.model.memory_switch,
+                                    "memory/length": cfg.model.memory_length,                                   
+                                    
+                                    # brigde noise setting
+                                    "bridgenoise/Modus": cfg.model.bridge_noise_mode,
+                                    "bridgenoise/sigma_tau":cfg.model.sigma_tau,
+                                    
+                                    # time steps / spacing
+                                    "time/stepsize training":cfg.data.T_sub,
+                                    "time/spacing":cfg.data.time_spacing,
+
+                                    # mixture setup
+                                    "mixture/enabled": cfg.data.mixture.enabled,
+
+                                    "mixture_disabled/drift": cfg.model.drift,
+                                    "mixture_disabled/sigma": cfg.model.sigma,
+
+                                    "mixture_enabled/p_bm1": cfg.data.mixture.p_bm1,
+                                    "mixture_enabled/bm1/drift": cfg.data.mixture.bm1.drift,
+                                    "mixture_enabled/bm1/volatility": cfg.data.mixture.bm1.volatility,
+                                    "mixture_enabled/bm1/S0": cfg.data.mixture.bm1.S0,
+                                    "mixture_enabled/bm2/drift": cfg.data.mixture.bm2.drift,
+                                    "mixture_enabled/bm2/volatility": cfg.data.mixture.bm2.volatility,
+                                    "mixture_enabled/bm2/S0": cfg.data.mixture.bm2.S0,
+                                })]
     
     trainer = Trainer(cfg.train, model, optimizer_target, optimizer_noise, train_loader, val_sub, val_full, callbacks)
     
