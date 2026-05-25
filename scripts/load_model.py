@@ -17,7 +17,7 @@ MODEL_REGISTRY = {
 @hydra.main(config_path="../conf", config_name="config_bm_1d", version_base=None)
 
 def main(cfg: DictConfig):   
-    ckpt = torch.load("../checkpoints/model_schnitt.pt", map_location="cpu")
+    ckpt = torch.load("../checkpoints/model.pt", map_location="cpu")
     model_class = MODEL_REGISTRY[cfg.model.model_name]
     model = model_class(cfg.model)
     model.load_state_dict(ckpt["model_state"])
