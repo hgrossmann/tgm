@@ -19,5 +19,14 @@ t_end: 1
 no_bridges: 10 # could/should be linked to subsampling rate 
 stepsize: 1e-3
 
+# validation start distribution
+mixture:
+  enabled: false
+  p_bm1: 0.5
+  bm1:
+    S0: 1.0
+  bm2:
+    S0: 0.0
+
 irregular_val_set_provided: false
 # TODO

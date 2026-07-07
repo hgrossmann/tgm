@@ -106,11 +106,12 @@ def generate_heatmap_data(
     return df
 
 
-@hydra.main(config_path="../conf", config_name="config_bm_1d", version_base=None)
+#@hydra.main(config_path="../conf", config_name="config_bm_1d", version_base=None)
+@hydra.main(config_path="../conf", config_name="config_stock_1d", version_base=None)
 def main(cfg: DictConfig):
     device = "cpu"
 
-    ckpt = torch.load("../checkpoints/model.pt", map_location=device)
+    ckpt = torch.load("../checkpoints/model_8296972.pt", map_location=device)
 
     model_class = MODEL_REGISTRY[cfg.model.model_name]
     model = model_class(cfg.model)
@@ -120,9 +121,9 @@ def main(cfg: DictConfig):
 
     parts = ["drift", "uncertainty"]
 
-    x_lower = -2.5
-    x_upper = 3.5
-    dt = 0.01
+    x_lower = 0
+    x_upper = 10
+    dt = 1/9
     dx = 0.01
 
     os.makedirs("../output_traj", exist_ok=True)

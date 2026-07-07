@@ -14,7 +14,8 @@ MODEL_REGISTRY = {
     "tnextModel": tnextModel
 }
 
-@hydra.main(config_path="../conf", config_name="config_bm_1d", version_base=None)
+#@hydra.main(config_path="../conf", config_name="config_bm_1d", version_base=None)
+@hydra.main(config_path="../conf", config_name="config_stock_1d", version_base=None)
 
 def main(cfg: DictConfig):   
     ckpt = torch.load("../checkpoints/model.pt", map_location="cpu")
@@ -193,11 +194,13 @@ def generate_trajectory(model, x0, n_steps, dt, device="cpu", history_x=None, hi
         if "drift" in model.trainable_parts:
             mu = model.drift(inpu)
         else:
-            mu = torch.full_like(x, model.mu)
+            #mu = torch.full_like(x, model.mu)
+            mu = torch.full_like(x, model.mu)*x
         if "uncertainty" in model.trainable_parts:
             sigma = model.noise(x, t, x_mem, t_mem, t2)
         else:
-            sigma = torch.full_like(x, model.sigma_gt**2)
+            #sigma = torch.full_like(x, model.sigma_gt**2)
+            sigma = torch.full_like(x, model.sigma_gt**2)*x**2
             
         x = x + mu * dt_t + torch.sqrt(sigma) * torch.sqrt(dt_t) * torch.randn_like(x)
 
