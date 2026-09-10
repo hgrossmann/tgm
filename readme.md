@@ -1,3 +1,5 @@
+### This Code is based on the work of Jahn, T., Chemseddine, J., Hagemann, P., Wald, C., & Steidl, G. (2025). Trajectory generator matching for time series. arXiv preprint arXiv:2505.23215.
+
 ### How to run
 Run `conda env create -f environment.yml && conda activate tgm-env` to install dependencies.
 
